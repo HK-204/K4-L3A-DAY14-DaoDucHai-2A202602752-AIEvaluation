@@ -30,11 +30,11 @@ critical.
 
 | Metric | Acceptable Low Score Scenario | Critical Low Score Scenario | Action Required |
 |---|---|---|---|
-| Faithfulness | | | |
-| Answer Relevance | | | |
-| Context Recall | | | |
-| Context Precision | | | |
-| Completeness | | | |
+| Faithfulness | Câu đàm thoại xã giao (greeting) hoặc câu hỏi out-of-scope cần model từ chối lịch sự bằng system instructions thay vì trích dẫn context. | Câu hỏi về chính sách cốt lõi (giá, hoàn tiền, bảo hành) nhưng câu trả lời bịa đặt thông tin không có trong tài liệu (hallucination). | Bổ sung hallucination guardrail; sửa system prompt nhấn mạnh chỉ trả lời dựa trên context; hạ temperature; kiểm tra groundedness. |
+| Answer Relevance | Người dùng đưa ra câu hỏi bẫy tiền đề sai (false premise trap) hoặc mơ hồ, trợ lý tập trung đính chính/làm rõ thay vì trả lời theo tiền đề sai. | Người dùng hỏi một vấn đề cụ thể (như thời hạn trả hàng) nhưng câu trả lời lại nói sang phương thức thanh toán hoặc giới thiệu sản phẩm. | Cải thiện prompt phân tích intent câu hỏi (intent classification); bổ sung few-shot examples hướng dẫn trả lời trúng trọng tâm. |
+| Context Recall | Câu hỏi tra cứu đơn giản (factual lookup) mà 1 chunk duy nhất đã đủ thông tin trả lời, không cần các chunk khác phải chứa toàn bộ ground-truth. | Câu hỏi đa bước (multi-step/multi-doc) đòi hỏi tổng hợp từ nhiều chính sách nhưng retriever bỏ sót tài liệu chứa thông tin trọng yếu. | Tăng top-k retrieval; chuyển từ thuần từ khóa (BM25) sang hybrid search (BM25 + Dense Embeddings); điều chỉnh kích thước và độ overlap của chunk. |
+| Context Precision | Retriever lấy top-k lớn (ví dụ k=10) để tối ưu recall, chấp nhận có chunk phụ trợ xếp lẫn nhưng mô hình sinh vẫn lọc được thông tin. | Chunks liên quan trực tiếp bị xếp ở vị trí cuối hoặc bị chôn vùi dưới nhiều chunk nhiễu, khiến LLM bị hiện tượng "lost in the middle" hoặc trả lời sai. | Thêm bước Reranking (Cross-Encoder reranker hoặc query-overlap rerank) để đẩy chunk quan trọng lên đầu; đặt threshold lọc similarity score. |
+| Completeness | Người dùng chỉ hỏi một câu ngắn gọn, trợ lý trả lời đúng ý chính mà không liệt kê danh sách dài các trường hợp ngoại lệ không được hỏi. | Câu hỏi yêu cầu đầy đủ quy trình hoặc điều kiện bồi hoàn nhưng trợ lý bỏ sót các điều kiện bắt buộc, gây hiểu lầm nghiêm trọng cho khách hàng. | Bổ sung hướng dẫn định dạng có cấu trúc (bullet points/checklist); tăng max_tokens khi trả lời; kiểm tra độ bao phủ thông tin trước khi phản hồi. |
 
 ### Exercise 1.2 — Bias trong LLM-as-a-Judge
 
@@ -47,14 +47,28 @@ Ba bias thường gặp:
 **Câu 1: Thiết kế experiment phát hiện position bias với ít nhất hai conditions.**
 
 > *Câu trả lời:*
+> - **Thiết kế thực nghiệm (Pairwise Comparison with Order Swap):**
+>   - Chuẩn bị một tập 20–30 cặp câu trả lời $(A, B)$ cho cùng một danh sách câu hỏi hỗ trợ khách hàng.
+>   - **Condition 1 (Order AB):** Đưa vào prompt cho LLM Judge: "Candidate 1: Answer A, Candidate 2: Answer B. Hãy đánh giá câu trả lời nào tốt hơn hoặc cho điểm từng câu."
+>   - **Condition 2 (Order BA):** Đảo ngược hoàn toàn thứ tự đưa vào: "Candidate 1: Answer B, Candidate 2: Answer A. Hãy đánh giá câu trả lời nào tốt hơn hoặc cho điểm từng câu."
+> - **Đo lường & Đánh giá:**
+>   - Thống kê tỷ lệ Candidate 1 được chọn hoặc có điểm cao hơn ở cả 2 condition: $P(\text{Win} \mid \text{Position 1})$.
+>   - Nếu tỷ lệ Candidate 1 luôn thắng áp đảo (ví dụ $> 60–65\%$) bất kể nội dung là A hay B, hệ thống mắc phải Position Bias rõ rệt.
+>   - **Khắc phục:** Áp dụng position-swapping (chấm cả 2 chiều và lấy trung bình hoặc chỉ chấp nhận thắng khi thắng ở cả 2 vị trí).
 
 **Câu 2: Làm thế nào giảm verbosity bias bằng rubric design?**
 
 > *Câu trả lời:*
+> 1. **Bổ sung tiêu chí Conciseness & Information Density:** Quy định rõ trong rubric rằng câu trả lời dài dòng, lặp ý hoặc chứa thông tin không cần thiết sẽ bị trừ điểm trực tiếp. Điểm tối đa (5/5) chỉ trao cho câu trả lời vừa đầy đủ ý vừa súc tích.
+> 2. **Chấm điểm theo đơn vị thông tin nguyên tử (Atomic Facts / Claims):** Yêu cầu Judge đếm số lượng luận điểm chính xác được đối chiếu với context, thay vì đánh giá cảm tính dựa trên độ dài hay văn phong trau chuốt.
+> 3. **Đặt khung độ dài chuẩn (Length guidance):** Nêu rõ độ dài mong muốn trong prompt chấm điểm (ví dụ: "câu trả lời chuẩn thường từ 2–4 câu"), giúp Judge không nhầm lẫn giữa "dài" và "chất lượng cao".
 
 **Câu 3: Tại sao cần calibrate LLM judge với human labels?**
 
 > *Câu trả lời:*
+> 1. **Xác lập Ground Truth và kiểm chứng độ tin cậy:** LLM Judge có thể có thiên kiến cố hữu (self-preference, leniency, severity) hoặc hiểu sai sắc thái chính sách riêng của doanh nghiệp. Nhãn do chuyên gia con người (human labels) là tiêu chuẩn vàng để xác minh LLM Judge có đánh giá đúng hay không.
+> 2. **Đo lường mức độ đồng thuận (Inter-Annotator Agreement):** Cần đo hệ số tương quan (Spearman / Pearson hoặc Cohen's Kappa) giữa điểm của LLM Judge và con người. Khi đạt mức đồng thuận cao ($\ge 0.7$), ta mới an tâm đưa LLM Judge vào pipeline tự động.
+> 3. **Hiệu chỉnh ngưỡng điểm (Threshold Calibration):** Giúp định nghĩa chính xác mức điểm của LLM (ví dụ 4.0/5.0) tương ứng với hành vi thực tế nào của nhân viên hỗ trợ, tránh trường hợp đặt ngưỡng quá lỏng lẻo hoặc quá khắt khe trong Quality Gate.
 
 ### Exercise 1.3 — Evaluation trong CI/CD
 
@@ -62,13 +76,16 @@ Ba bias thường gặp:
 
 | Metric | Threshold | Lý do |
 |---|---:|---|
-| Faithfulness | | |
-| Answer Relevance | | |
-| Completeness | | |
+| Faithfulness | $\ge 0.80$ | Trong domain CSKH OrbitTech, thông tin bịa đặt (hallucination) về giá cả, thời hạn bảo hành hay tiền bồi thường sẽ gây hậu quả pháp lý và thiệt hại tài chính trực tiếp, nên cần ngưỡng nghiêm ngặt nhất. |
+| Answer Relevance | $\ge 0.75$ | Đảm bảo câu trả lời luôn đi thẳng vào nhu cầu của người dùng, không trả lời vòng vo hoặc lạc đề làm giảm trải nghiệm khách hàng. |
+| Completeness | $\ge 0.70$ | Đảm bảo cung cấp đủ các điều kiện/hướng dẫn cốt lõi; cho phép dung sai nhất định cho các trường hợp câu trả lời tóm tắt ngắn gọn. |
 
 **Câu 2: Khi nào dùng offline evaluation, online evaluation và human review?**
 
 > *Câu trả lời:*
+> - **Offline Evaluation (Pre-deployment / CI/CD):** Dùng làm Quality Gate tự động chạy trên Golden Dataset (20–100 cases) mỗi khi có Pull Request, đổi prompt, cập nhật model hoặc chỉnh sửa pipeline RAG. Mục đích là phát hiện sớm hồi quy (regression) và chặn code lỗi trước khi merge/deploy.
+> - **Online Evaluation (Post-deployment / Production):** Dùng để giám sát liên tục hệ thống đang phục vụ người dùng thật thông qua telemetry (latency, token cost), tín hiệu người dùng (like/dislike, copy, tỷ lệ escalate sang tổng đài viên người), và chạy LLM Judge trên mẫu log định kỳ (sampling) để phát hiện drift trong thế giới thực.
+> - **Human Review (Auditing & Improvement Loop):** Dùng định kỳ (hàng tuần/tháng) hoặc khi có khiếu nại nghiêm trọng từ khách hàng. Chuyên gia sẽ xem xét các ca khó, phân tích nguyên nhân gốc (5 Whys), hiệu chỉnh LLM Judge và bổ sung các ca thất bại mới vào Golden Dataset để hoàn thiện vòng lặp Continuous Improvement.
 
 ---
 
