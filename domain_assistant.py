@@ -266,6 +266,71 @@ class OpenAIGenerator:
         return answer
 
 
+class GeminiGenerator:
+    """Generator supporting Google AI Studio Gemini API keys via OpenAI compatibility endpoint."""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gemini-3.1-flash-lite",
+        max_output_tokens: int = 300,
+    ) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.model_pool = [
+            model,
+            "gemini-3.1-flash-lite",
+            "gemini-3.5-flash-lite",
+            "gemini-3.8-flash",
+        ]
+        seen: set[str] = set()
+        self.model_pool = [m for m in self.model_pool if not (m in seen or seen.add(m))]
+        self.current_model_idx = 0
+        self.max_output_tokens = max_output_tokens
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        )
+
+    def generate(self, prompt: str) -> str:
+        for attempt in range(len(self.model_pool) * 3):
+            active_model = self.model_pool[self.current_model_idx]
+            try:
+                response = self.client.chat.completions.create(
+                    model=active_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0,
+                    max_tokens=self.max_output_tokens,
+                )
+                answer = (response.choices[0].message.content or "").strip()
+                if not answer:
+                    raise RuntimeError(f"{active_model} returned an empty answer")
+                time.sleep(4)
+                return answer
+            except Exception as exc:
+                err_str = str(exc)
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    if self.current_model_idx < len(self.model_pool) - 1:
+                        self.current_model_idx += 1
+                        next_model = self.model_pool[self.current_model_idx]
+                        print(
+                            f"\n[Quota Exceeded] Switching from {active_model} to fallback model {next_model}...",
+                            flush=True,
+                        )
+                        time.sleep(2)
+                        continue
+                    else:
+                        self.current_model_idx = 0
+                        print(
+                            "\n[Rate Limit] All models hit quota. Waiting 30s before cycling...",
+                            flush=True,
+                        )
+                        time.sleep(30)
+                else:
+                    time.sleep(3)
+        raise RuntimeError("Failed to generate answer after trying all models in pool")
+
+
 @dataclass(frozen=True)
 class DomainResponse:
     question: str
@@ -296,10 +361,21 @@ class DomainAssistant:
         top_k: int = 5,
     ) -> DomainAssistant:
         corpus_id, chunks = load_corpus(corpus_dir)
+        if generator is None:
+            gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+            openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+            if gemini_key or openai_key.startswith("AIza") or openai_key.startswith("AQ."):
+                key = gemini_key or openai_key
+                model = os.getenv("GEMINI_MODEL", "").strip()
+                if not model or model.startswith("gpt") or "1.5" in model or "2.5" in model:
+                    model = "gemini-3.1-flash-lite"
+                generator = GeminiGenerator(api_key=key, model=model)
+            else:
+                generator = OpenAIGenerator()
         return cls(
             corpus_id,
             BM25Retriever(chunks),
-            generator if generator is not None else OpenAIGenerator(),
+            generator,
             top_k,
         )
 
@@ -405,6 +481,17 @@ def generate_actual_answers(
         f"model={model}, top_k={top_k}"
     )
 
+    output_cache_path = Path("artifacts/actual_answers.json")
+    cached_by_id: dict[str, Any] = {}
+    if output_cache_path.exists():
+        try:
+            old_data = json.loads(output_cache_path.read_text(encoding="utf-8"))
+            for ans in old_data.get("answers", []):
+                if ans.get("id") and ans.get("actual_answer") and ans.get("error") is None:
+                    cached_by_id[ans["id"]] = ans
+        except Exception:
+            pass
+
     answers: list[dict[str, Any]] = []
     for index, item in enumerate(questions, start=1):
         percentage = index / total
@@ -414,6 +501,16 @@ def generate_actual_answers(
         question_preview = re.sub(r"\s+", " ", item["question"]).strip()
         if len(question_preview) > 58:
             question_preview = f"{question_preview[:55]}..."
+
+        if item["id"] in cached_by_id:
+            answers.append(cached_by_id[item["id"]])
+            filled_after = round(20 * percentage)
+            bar_after = "#" * filled_after + "-" * (20 - filled_after)
+            notify(
+                f"[{bar_after}] {index:02d}/{total:02d} | {item['id']} OK (cached)"
+            )
+            continue
+
         notify(
             f"[{bar_before}] {completed_before:02d}/{total:02d} | "
             f"{item['id']} generating: {question_preview}"
@@ -443,6 +540,28 @@ def generate_actual_answers(
                 "error": None,
             }
         )
+
+        # Incrementally save so progress is never lost
+        try:
+            output_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            partial_artifact = {
+                "schema_version": "1.0",
+                "corpus_id": assistant.corpus_id,
+                "generated_at": datetime.now(UTC).isoformat(),
+                "agent": {
+                    "name": "domain-assistant",
+                    "model": model,
+                    "top_k": top_k,
+                    "prompt_version": "1.0",
+                },
+                "answers": answers,
+            }
+            output_cache_path.write_text(
+                json.dumps(partial_artifact, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
 
         filled_after = round(20 * percentage)
         bar_after = "#" * filled_after + "-" * (20 - filled_after)
