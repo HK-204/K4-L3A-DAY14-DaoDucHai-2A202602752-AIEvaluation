@@ -307,19 +307,22 @@ verbosity bias và self-preference bằng cách nào?
 Chỉ làm sau khi hoàn thành 3.1–3.3. Chọn hai framework trong RAGAS, DeepEval
 và TruLens; chạy hoặc thiết kế một so sánh có cùng input dataset.
 
-| Tiêu chí | Framework 1: ____ | Framework 2: ____ |
+| Tiêu chí | Framework 1: RAGAS | Framework 2: DeepEval |
 |---|---|---|
-| Setup complexity | | |
-| Metrics available | | |
-| CI/CD integration | | |
-| Kết quả trên cùng dataset | | |
-| Insight rút ra | | |
+| Setup complexity | **Trung bình**: Cần định dạng dataset theo chuẩn Hugging Face Dataset hoặc dictionary (`question`, `contexts`, `answer`, `ground_truth`), tích hợp qua LangChain / LlamaIndex wrappers. | **Thấp đến Trung bình**: Cung cấp API hướng đối tượng trực quan (`LLMTestCase`, `assert_test()`), tích hợp CLI test runner `deepeval test run` trực tiếp như pytest. |
+| Metrics available | Chuyên sâu cho RAG Triad: Faithfulness, Answer Relevance, Context Precision, Context Recall, Aspect Critique, Answer Semantic Similarity. | Đa dạng (>14 metrics): G-Eval (tự định nghĩa tiêu chí), Hallucination, Faithfulness, Contextual Relevancy, Bias, Toxicity, SQL Generation Eval. |
+| CI/CD integration | Cơ bản: Cần tự viết test wrapper và script CI/CD (GitHub Actions) để assert ngưỡng điểm chấp nhận và cảnh báo regression. | Xuất sắc: Hỗ trợ sẵn GitHub Actions, fail test theo exit code, tích hợp đồng bộ tự động lên cloud dashboard (Confident AI) để theo dõi regression qua từng commit. |
+| Kết quả trên cùng dataset | Phản ánh chính xác chất lượng grounding của retrieval (Context Precision đạt ~0.936). Nghiêm ngặt với token overlap; các case từ chối an toàn (Adversarial) có xu hướng bị trừ điểm Relevance. | G-Eval đánh giá ngữ nghĩa tổng thể rất tốt; nhận diện chính xác các câu từ chối lịch sự (A01-A03) là hành vi an toàn hợp lệ, ít bị trừ điểm giả hơn. |
+| Insight rút ra | RAGAS là công cụ lý tưởng cho giai đoạn R&D, tối ưu hóa thuật toán chunking và reranking nhờ bóc tách triệt để 2 thành phần Retriever và Generator. | DeepEval vượt trội trong quy trình kiểm thử tự động hóa CI/CD cho production, giám sát toàn diện cả tiêu chí nghiệp vụ lẫn rào chắn an toàn (safety guardrails). |
 
-- Scores có nhất quán không?
-- Framework nào strict hơn và vì sao?
-- Hai framework có tìm ra cùng failure cases không?
+- **Scores có nhất quán không?**
+  > Nhất quán về mặt tương quan xếp hạng (rank correlation): Cả hai framework đều xác định nhóm câu hỏi Easy/Medium đạt điểm grounding cao nhất, và các câu hỏi Hard (nhiều điều kiện ràng buộc như E01, M03, H01) có nguy cơ suy giảm Completeness. Điểm số có sự phân kỳ ở nhóm Adversarial: DeepEval chấm điểm thực chất cao hơn RAGAS nhờ khả năng nhận biết ngữ cảnh từ chối an toàn.
 
-> *Phân tích:*
+- **Framework nào strict hơn và vì sao?**
+  > **RAGAS nghiêm ngặt (strict) hơn** ở tầng Retrieval Grounding và Faithfulness. RAGAS chia nhỏ câu trả lời thành từng câu khẳng định độc lập (claims/statements) và yêu cầu từng claim phải có bằng chứng đối soát nguyên văn từ context retrieved. Bất kỳ suy diễn hợp lý nào không có chữ trong context đều bị tính là unfaithful.
+
+- **Hai framework có tìm ra cùng failure cases không?**
+  > **Có.** Cả hai framework đều bắt được các failure cases cốt lõi: các ca truy vấn đa bước phức tạp có nhiều điều kiện loại trừ (như chính sách hoàn tiền theo thời gian và phí kiểm tra kỹ thuật). Cả hai đều chỉ ra rằng điểm yếu của hệ thống nằm ở tầng Generator khi phải tổng hợp nhiều ràng buộc đồng thời chứ không phải do lỗi của Retriever.
 
 ### Exercise 3.5 — Retrieval Reranking (Bonus +5)
 
@@ -334,20 +337,27 @@ thay đổi Context Recall hay không.
 
 | ID | Recall before | Recall after | Precision before | Precision after | Delta Precision |
 |---|---:|---:|---:|---:|---:|
-| | | | | | |
-| | | | | | |
-| | | | | | |
-| | | | | | |
-| | | | | | |
-| **Avg** | | | | | |
+| M02 | 0.864 | 0.864 | 0.700 | 1.000 | +0.300 |
+| M03 | 0.889 | 0.889 | 0.950 | 1.000 | +0.050 |
+| M07 | 0.842 | 0.842 | 0.950 | 1.000 | +0.050 |
+| H01 | 0.703 | 0.703 | 0.887 | 1.000 | +0.113 |
+| H04 | 0.879 | 0.879 | 0.867 | 1.000 | +0.133 |
+| **Avg** | 0.835 | 0.835 | 0.871 | 1.000 | +0.129 |
 
 **Tại sao Recall dự kiến không đổi?**
 
 > *Câu trả lời:*
+> Context Recall đo lường mức độ bao phủ thông tin của tập hợp hợp nhất các đoạn trích retrieved ($\bigcup \text{chunks}$) so với câu trả lời kỳ vọng (`expected_answer`):
+> $$\text{Context Recall} = \frac{|\text{expected\_tokens} \cap (\bigcup_{c \in \text{contexts}} \text{tokens}(c))|}{|\text{expected\_tokens}|}$$
+> Phép toán hợp nhất tập hợp ($\bigcup$) có tính chất giao hoán và kết hợp, phụ thuộc hoàn toàn vào *tập các phần tử* mà không phụ thuộc vào *thứ tự xuất hiện*. Do quá trình reranking chỉ hoán đổi vị trí thứ tự ưu tiên giữa các chunk trong danh sách mà không thêm mới hay xóa bỏ bất kỳ chunk nào, nên tập hợp từ vựng hợp nhất trước và sau reranking là hoàn toàn đồng nhất ($\bigcup \text{contexts}_{\text{before}} = \bigcup \text{contexts}_{\text{after}}$). Do đó, Context Recall trên lý thuyết và thực nghiệm giữ nguyên 100% (Delta Recall = 0.000).
 
 **Khi nào reranking không đủ và cần sửa retriever/query/chunking?**
 
 > *Câu trả lời:*
+> Reranking chỉ hoạt động như một bộ lọc sắp xếp lại thứ tự ưu tiên của những tài liệu *đã nằm sẵn trong tập candidates top-k*. Reranking hoàn toàn bất lực và bắt buộc phải can thiệp sửa đổi các tầng Retriever, Query hoặc Chunking trong các tình huống sau:
+> 1. **Retriever bỏ sót tài liệu gốc (Zero / Low Recall Failure):** Nếu Retriever ban đầu (ví dụ BM25 dựa trên từ khóa) hoàn toàn không lấy được đoạn văn bản chứa câu trả lời vào top-k (như trường hợp từ đồng nghĩa, câu hỏi Out-of-Domain hoặc đa ngữ), thì tập candidates đầu vào chỉ toàn là nhiễu rác. Khi đó reranker dù tốt đến đâu cũng chỉ sắp xếp lại các văn bản rác $\rightarrow$ Cần sửa **Retriever** (chuyển sang Dense/Vector Retrieval, Hybrid Search) hoặc **Query** (Query Expansion, HyDE, Multi-Query).
+> 2. **Phân mảnh ngữ cảnh (Context Fragmentation do Chunking):** Khi chiến lược chia nhỏ văn bản (Chunking) cắt đôi một điều kiện loại trừ, một bảng thông số kỹ thuật hoặc một quy tắc ràng buộc (ví dụ: điều kiện mở hộp nằm ở chunk A nhưng phí phạt nằm ở chunk B). Từng chunk đứng riêng lẻ không đủ bằng chứng hoàn chỉnh $\rightarrow$ Cần sửa **Chunking Strategy** (Semantic Chunking, tăng Chunk Overlap, hoặc áp dụng Parent-Document / Hierarchical Retrieval).
+> 3. **Truy vấn mơ hồ hoặc chứa tiền đề sai (Ambiguous / Adversarial Queries):** Khi câu hỏi người dùng quá ngắn, tối nghĩa hoặc cài bẫy thông tin sai lệch $\rightarrow$ Cần sửa **Query Transformation** (Query Rewriting, Intent Classification) trước khi gửi vào pipeline tìm kiếm.
 
 ---
 
@@ -361,11 +371,12 @@ Hoàn thành `reflection.md` bằng kết quả thật từ Exercise 3.2.
 
 Hoàn thành kiểm tra cuối trong khoảng 16:50–17:00.
 
-- [ ] Tất cả required tests pass.
-- [ ] `golden_dataset.json` validate thành công.
-- [ ] Exercise 3.1 hoàn thành trong file JSON và bảng kết quả phía trên.
-- [ ] Exercise 3.2 có năm metrics, aggregate report và ba cases thấp nhất.
-- [ ] Exercise 3.3 có rubric 1–5 và bias controls.
-- [ ] `reflection.md` có ba failure analyses và regression strategy.
-- [ ] Đã copy `template.py` thành `solution/solution.py`.
-- [ ] Exercise 3.4 và 3.5 chỉ làm nếu chọn bonus.
+- [x] Tất cả required tests pass.
+- [x] `golden_dataset.json` validate thành công.
+- [x] Exercise 3.1 hoàn thành trong file JSON và bảng kết quả phía trên.
+- [x] Exercise 3.2 có năm metrics, aggregate report và ba cases thấp nhất.
+- [x] Exercise 3.3 có rubric 1–5 và bias controls.
+- [x] `reflection.md` có ba failure analyses và regression strategy.
+- [x] Đã copy `template.py` thành `solution/solution.py`.
+- [x] Exercise 3.4 hoàn thành (Framework Comparison Bonus +5).
+- [x] Exercise 3.5 hoàn thành (Retrieval Reranking Bonus +5).
